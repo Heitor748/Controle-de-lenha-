@@ -1,130 +1,97 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:googleapis_auth/googleapis_auth.dart' as auth;
+import 'package:googleapis_auth/auth_io.dart';
 import 'package:http/http.dart' as http;
 
-/// Singleton service that uploads files to the signed-in user's Google Drive.
+/// Singleton service that uploads files to Google Drive via Service Account.
+///
+/// The service account JSON is bundled at assets/service_account.json.
+/// The target Drive folder must be shared with the service account as Editor:
+///   silvaheitor@controle-de-lenha.iam.gserviceaccount.com
 class DriveService {
   DriveService._();
   static final DriveService instance = DriveService._();
 
-  // ─── Google Sign-In ───────────────────────────────────────────────────────────
+  static const List<String> _scopes = [drive.DriveApi.driveFileScope];
 
-  static const List<String> _scopes = [
-    drive.DriveApi.driveFileScope, // create / open files created by this app
-  ];
+  // ─── Public API ──────────────────────────────────────────────────────────────
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: _scopes);
-
-  // ─── Public API ───────────────────────────────────────────────────────────────
-
-  /// Uploads the file at [filePath] to Google Drive and returns its
-  /// `webViewLink`, or `null` if the upload fails or the user cancels sign-in.
+  /// Uploads [filePath] to Google Drive.
   ///
-  /// [fileName] is the display name shown in Drive.
-  /// [mimeType] must be the correct MIME type (e.g. `'application/pdf'`,
-  /// `'image/jpeg'`).
+  /// [folderId] overrides the DRIVE_FOLDER_ID from .env.
+  /// Returns the webViewLink of the uploaded file, or null on error.
   Future<String?> uploadFile(
     String filePath,
     String fileName,
-    String mimeType,
-  ) async {
+    String mimeType, {
+    String? folderId,
+  }) async {
     try {
-      // ── authenticate ──────────────────────────────────────────────────────
-      final GoogleSignInAccount? account = await _signIn();
-      if (account == null) return null; // user cancelled
+      final String targetFolder =
+          folderId ?? dotenv.env['DRIVE_FOLDER_ID'] ?? '';
 
-      final http.Client httpClient = await _buildHttpClient(account);
+      final http.Client authClient = await _buildAuthClient();
 
       try {
-        // ── build Drive API client ────────────────────────────────────────
-        final drive.DriveApi driveApi = drive.DriveApi(httpClient);
+        final drive.DriveApi driveApi = drive.DriveApi(authClient);
 
-        // ── prepare file metadata ─────────────────────────────────────────
         final drive.File fileMetadata = drive.File()
           ..name = fileName
-          ..mimeType = mimeType;
+          ..mimeType = mimeType
+          ..parents = targetFolder.isNotEmpty ? [targetFolder] : null;
 
-        // ── prepare media stream ──────────────────────────────────────────
         final File localFile = File(filePath);
         if (!localFile.existsSync()) {
           throw FileSystemException('File not found', filePath);
         }
 
-        final drive.Media media = drive.Media(
-          localFile.openRead(),
-          localFile.lengthSync(),
-          contentType: mimeType,
-        );
-
-        // ── upload ────────────────────────────────────────────────────────
         final drive.File uploaded = await driveApi.files.create(
           fileMetadata,
-          uploadMedia: media,
+          uploadMedia: drive.Media(
+            localFile.openRead(),
+            localFile.lengthSync(),
+            contentType: mimeType,
+          ),
           $fields: 'id,webViewLink',
         );
 
-        // Make the file readable by anyone with the link (optional –
-        // comment out if you want the file to stay private).
-        if (uploaded.id != null) {
-          await driveApi.permissions.create(
-            drive.Permission()
-              ..role = 'reader'
-              ..type = 'anyone',
-            uploaded.id!,
-          );
-        }
+        if (uploaded.id == null) return null;
+
+        // Make file readable by anyone with the link.
+        await driveApi.permissions.create(
+          drive.Permission()
+            ..role = 'reader'
+            ..type = 'anyone',
+          uploaded.id!,
+        );
 
         return uploaded.webViewLink;
       } finally {
-        httpClient.close();
+        authClient.close();
       }
-    } on GoogleSignIn catch (e) {
-      // Auth-specific error — surface as null to let callers handle gracefully.
-      // ignore: avoid_print
-      print('DriveService: Google Sign-In error – $e');
-      return null;
     } catch (e) {
+      // Drive upload is non-critical — never block the main save flow.
       // ignore: avoid_print
-      print('DriveService.uploadFile: error – $e');
-      rethrow;
+      print('DriveService.uploadFile error: $e');
+      return null;
     }
-  }
-
-  /// Signs the user out of Google (clears cached credentials).
-  Future<void> signOut() async {
-    await _googleSignIn.signOut();
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  Future<GoogleSignInAccount?> _signIn() async {
-    // Return existing account if already signed in.
-    if (_googleSignIn.currentUser != null) return _googleSignIn.currentUser;
+  Future<http.Client> _buildAuthClient() async {
+    final String jsonStr =
+        await rootBundle.loadString('assets/service_account.json');
+    final Map<String, dynamic> json =
+        jsonDecode(jsonStr) as Map<String, dynamic>;
 
-    // Try silent sign-in first (no UI if token is still valid).
-    GoogleSignInAccount? account = await _googleSignIn.signInSilently();
-    account ??= await _googleSignIn.signIn();
-    return account;
-  }
+    final ServiceAccountCredentials credentials =
+        ServiceAccountCredentials.fromJson(json);
 
-  Future<http.Client> _buildHttpClient(GoogleSignInAccount account) async {
-    final GoogleSignInAuthentication googleAuth =
-        await account.authentication;
-
-    final auth.AccessCredentials credentials = auth.AccessCredentials(
-      auth.AccessToken(
-        'Bearer',
-        googleAuth.accessToken!,
-        // Drive tokens are typically valid for 1 hour from now.
-        DateTime.now().toUtc().add(const Duration(hours: 1)),
-      ),
-      googleAuth.idToken,
-      _scopes,
-    );
-
-    return auth.authenticatedClient(http.Client(), credentials);
+    return clientViaServiceAccount(credentials, _scopes);
   }
 }

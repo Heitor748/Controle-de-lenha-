@@ -21,6 +21,7 @@ android/app/release/
 # Secrets — NEVER commit these
 .env
 android/app/google-services.json
+assets/service_account.json
 
 # IDE
 .idea/
