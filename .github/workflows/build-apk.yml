@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [claude/android-firewood-ocr-app-QaW5b, main]
+    branches: [claude/android-firewood-ocr-app-QaW5b, claude/migrate-gradle-plugin-LqPUn, main]
   workflow_dispatch:
 
 jobs:
