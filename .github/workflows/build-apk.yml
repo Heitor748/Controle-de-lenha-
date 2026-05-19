@@ -23,14 +23,20 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.22.0"
           channel: stable
           cache: true
+
+      - name: Debug Flutter environment
+        run: |
+          flutter --version
+          echo "FLUTTER_ROOT=$FLUTTER_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
 
       - name: Create local.properties
         run: |
           echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
           echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
+          cat android/local.properties
 
       - name: Create .env file
         run: |
@@ -68,19 +74,17 @@ jobs:
 
           sizes = {'mipmap-mdpi': 48, 'mipmap-hdpi': 72, 'mipmap-xhdpi': 96, 'mipmap-xxhdpi': 144, 'mipmap-xxxhdpi': 192}
           base = 'android/app/src/main/res'
-          png_data = create_png(192, 76, 175, 80)
 
           for folder, size in sizes.items():
               os.makedirs(f'{base}/{folder}', exist_ok=True)
-              small = create_png(size, 76, 175, 80)
               with open(f'{base}/{folder}/ic_launcher.png', 'wb') as f:
-                  f.write(small)
+                  f.write(create_png(size, 76, 175, 80))
 
           print('Launcher icons generated.')
           PYEOF
 
       - name: Build APK (release)
-        run: flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --release --no-tree-shake-icons --verbose
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
